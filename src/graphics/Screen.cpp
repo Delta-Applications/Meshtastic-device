@@ -118,7 +118,7 @@ static void drawIconScreen(const char *upperMsg, OLEDDisplay *display, OLEDDispl
 
     display->setFont(FONT_MEDIUM);
     display->setTextAlignment(TEXT_ALIGN_LEFT);
-    const char *title = "meshtastic.org";
+    const char *title = "//\ESHT/\ST/C";
     display->drawString(x + getStringCenteredX(title), y + SCREEN_HEIGHT - FONT_HEIGHT_MEDIUM, title);
     display->setFont(FONT_SMALL);
 
@@ -219,7 +219,7 @@ static void drawCriticalFaultFrame(OLEDDisplay *display, OLEDDisplayUiState *sta
     display->drawString(0 + x, 0 + y, tempBuf);
     display->setTextAlignment(TEXT_ALIGN_LEFT);
     display->setFont(FONT_SMALL);
-    display->drawString(0 + x, FONT_HEIGHT_MEDIUM + y, "For help, please post on\nmeshtastic.discourse.group");
+    display->drawString(0 + x, FONT_HEIGHT_MEDIUM + y, "Please consult a specialist and/or documentation");
 }
 
 /// Draw the last text message we received
@@ -1503,7 +1503,7 @@ void DebugInfo::drawFrameWiFi(OLEDDisplay *display, OLEDDisplayUiState *state, i
     } else if (radioConfig.preferences.wifi_ap_mode) {
         display->drawString(x, y, String("WiFi: Software AP"));
     } else if (WiFi.status() != WL_CONNECTED) {
-        display->drawString(x, y, String("WiFi: Not Connected"));
+        display->drawString(x, y, String("WiFi: Disconnected"));
     } else {
         display->drawString(x, y, String("WiFi: Connected"));
 
