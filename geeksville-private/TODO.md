@@ -2,8 +2,8 @@
 
 You probably don't care about this section - skip to the next one.
 
-* measure rak4630 power draw and turn off power for GPS most of the time.  We should be able to run on the small solar panel.
 * usb lora dongle from pine64, add end user instructions
+* measure rak4630 power draw and turn off power for GPS most of the time.  We should be able to run on the small solar panel.
 * turn on watchdog reset if app hangs on nrf52 or esp32
 * pine64 solar boards
 * for the matrix gateway?  recommended by @sam-uk https://github.com/matrix-org/coap-proxy
@@ -325,7 +325,7 @@ Items after the first final candidate release.
 - add "store and forward" support for messages, or move to the DB sync model. This would allow messages to be eventually delivered even if nodes are out of contact at the moment.
 - use variable length Strings in protobufs (instead of current fixed buffers). This would save lots of RAM
 - use BLEDevice::setPower to lower our BLE transmit power - extra range doesn't help us, it costs amps and it increases snoopability
-- make a HAM build: just a new frequency list, a bool to say 'never do encryption' and use hte callsign as that node's unique id. -from Girts
+- make a Ham build: just a new frequency list, a bool to say 'never do encryption' and use the callsign as that node's unique id. -from Girts
 - don't forward redundant pings or ping responses to the phone, it just wastes phone battery
 - don't send location packets if we haven't moved significantly
 - scrub default radio config settings for bandwidth/range/speed

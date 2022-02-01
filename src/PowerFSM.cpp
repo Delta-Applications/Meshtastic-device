@@ -1,8 +1,8 @@
-#include "configuration.h"
 #include "PowerFSM.h"
 #include "GPS.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "configuration.h"
 #include "graphics/Screen.h"
 #include "main.h"
 #include "sleep.h"
@@ -11,6 +11,11 @@
 /// Should we behave as if we have AC power now?
 static bool isPowered()
 {
+    // Completely circumvents the battery / power sensing logic and assumes constant power source
+    if (radioConfig.preferences.is_always_powered) {
+        return true;
+    }
+
     bool isRouter = radioConfig.preferences.is_router;
 
     // If we are not a router and we already have AC power go to POWER state after init, otherwise go to ON
@@ -32,6 +37,14 @@ static void sdsEnter()
     doDeepSleep(getPref_sds_secs() * 1000LL);
 }
 
+extern Power *power;
+
+static void shutdownEnter()
+{
+    DEBUG_MSG("Enter state: SHUTDOWN\n");
+    power->shutdown();
+}
+
 #include "error.h"
 
 static uint32_t secsSlept;
@@ -50,7 +63,6 @@ static void lsIdle()
     // DEBUG_MSG("lsIdle begin ls_secs=%u\n", getPref_ls_secs());
 
 #ifndef NO_ESP32
-    esp_sleep_source_t wakeCause = ESP_SLEEP_WAKEUP_UNDEFINED;
 
     // Do we have more sleeping to do?
     if (secsSlept < getPref_ls_secs()) {
@@ -60,14 +72,14 @@ static void lsIdle()
         // If some other service would stall sleep, don't let sleep happen yet
         if (doPreflightSleep()) {
             setLed(false); // Never leave led on while in light sleep
-            wakeCause = doLightSleep(sleepTime * 1000LL);
+            esp_sleep_source_t wakeCause2 = doLightSleep(sleepTime * 1000LL);
 
-            switch (wakeCause) {
+            switch (wakeCause2) {
             case ESP_SLEEP_WAKEUP_TIMER:
                 // Normal case: timer expired, we should just go back to sleep ASAP
 
                 setLed(true);                // briefly turn on led
-                wakeCause = doLightSleep(1); // leave led on for 1ms
+                wakeCause2 = doLightSleep(1); // leave led on for 1ms
 
                 secsSlept += sleepTime;
                 // DEBUG_MSG("sleeping, flash led!\n");
@@ -81,7 +93,7 @@ static void lsIdle()
             default:
                 // We woke for some other reason (button press, device interrupt)
                 // uint64_t status = esp_sleep_get_ext1_wakeup_status();
-                DEBUG_MSG("wakeCause %d\n", wakeCause);
+                DEBUG_MSG("wakeCause2 %d\n", wakeCause2);
 
 #ifdef BUTTON_PIN
                 bool pressed = !digitalRead(BUTTON_PIN);
@@ -208,10 +220,12 @@ static void screenPress()
     screen->onPress();
 }
 
-static void bootEnter() {
+static void bootEnter()
+{
     DEBUG_MSG("Enter state: BOOT\n");
 }
 
+State stateSHUTDOWN(shutdownEnter, NULL, NULL, "SHUTDOWN");
 State stateSDS(sdsEnter, NULL, NULL, "SDS");
 State stateLS(lsEnter, lsIdle, lsExit, "LS");
 State stateNB(nbEnter, NULL, NULL, "NB");
@@ -234,8 +248,10 @@ void PowerFSM_setup()
     // if we are a router node, we go to NB (no need for bluetooth) otherwise we go to DARK (so we can send message to phone)
     powerFSM.add_transition(&stateLS, isRouter ? &stateNB : &stateDARK, EVENT_WAKE_TIMER, NULL, "Wake timer");
 
-    // We need this transition, because we might not transition if we were waiting to enter light-sleep, because when we wake from light sleep we _always_ transition to NB or dark and
-    powerFSM.add_transition(&stateLS, isRouter ? &stateNB : &stateDARK, EVENT_PACKET_FOR_PHONE, NULL, "Received packet, exiting light sleep");
+    // We need this transition, because we might not transition if we were waiting to enter light-sleep, because when we wake from
+    // light sleep we _always_ transition to NB or dark and
+    powerFSM.add_transition(&stateLS, isRouter ? &stateNB : &stateDARK, EVENT_PACKET_FOR_PHONE, NULL,
+                            "Received packet, exiting light sleep");
     powerFSM.add_transition(&stateNB, &stateNB, EVENT_PACKET_FOR_PHONE, NULL, "Received packet, resetting win wake");
 
     // Handle press events - note: we ignore button presses when in API mode
@@ -254,6 +270,14 @@ void PowerFSM_setup()
     powerFSM.add_transition(&stateDARK, &stateSDS, EVENT_LOW_BATTERY, NULL, "LowBat");
     powerFSM.add_transition(&stateON, &stateSDS, EVENT_LOW_BATTERY, NULL, "LowBat");
     powerFSM.add_transition(&stateSERIAL, &stateSDS, EVENT_LOW_BATTERY, NULL, "LowBat");
+
+    // Handle being told to power off
+    powerFSM.add_transition(&stateBOOT, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
+    powerFSM.add_transition(&stateLS, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
+    powerFSM.add_transition(&stateNB, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
+    powerFSM.add_transition(&stateDARK, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
+    powerFSM.add_transition(&stateON, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
+    powerFSM.add_transition(&stateSERIAL, &stateSHUTDOWN, EVENT_SHUTDOWN, NULL, "Shutdown");
 
     powerFSM.add_transition(&stateDARK, &stateON, EVENT_BLUETOOTH_PAIR, NULL, "Bluetooth pairing");
     powerFSM.add_transition(&stateON, &stateON, EVENT_BLUETOOTH_PAIR, NULL, "Bluetooth pairing");
@@ -312,15 +336,23 @@ void PowerFSM_setup()
 #ifndef NRF52_SERIES
     // We never enter light-sleep or NB states on NRF52 (because the CPU uses so little power normally)
 
-    // I don't think this transition is correct, turning off for now - @geeksville
-    // powerFSM.add_timed_transition(&stateDARK, &stateNB, getPref_phone_timeout_secs() * 1000, NULL, "Phone timeout");
+    // See: https://github.com/meshtastic/Meshtastic-device/issues/1071
+    if (isRouter || radioConfig.preferences.is_power_saving) {
 
-    powerFSM.add_timed_transition(&stateNB, &stateLS, getPref_min_wake_secs() * 1000, NULL, "Min wake timeout");
-    powerFSM.add_timed_transition(&stateDARK, &stateLS, getPref_wait_bluetooth_secs() * 1000, NULL, "Bluetooth timeout");
-    meshSds = getPref_mesh_sds_timeout_secs();
+        // I don't think this transition is correct, turning off for now - @geeksville
+        // powerFSM.add_timed_transition(&stateDARK, &stateNB, getPref_phone_timeout_secs() * 1000, NULL, "Phone timeout");
+        powerFSM.add_timed_transition(&stateNB, &stateLS, getPref_min_wake_secs() * 1000, NULL, "Min wake timeout");
+        powerFSM.add_timed_transition(&stateDARK, &stateLS, getPref_wait_bluetooth_secs() * 1000, NULL, "Bluetooth timeout");
+        meshSds = getPref_mesh_sds_timeout_secs();
+
+    } else {
+
+        meshSds = UINT32_MAX;
+    }
+
 #else
     lowPowerState = &stateDARK;
-    meshSds = UINT32_MAX; //Workaround for now: Don't go into deep sleep on the RAK4631
+    meshSds = UINT32_MAX; // Workaround for now: Don't go into deep sleep on the RAK4631
 #endif
 
     if (meshSds != UINT32_MAX)

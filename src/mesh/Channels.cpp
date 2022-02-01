@@ -102,7 +102,7 @@ void Channels::initDefaultChannel(ChannelIndex chIndex)
 CryptoKey Channels::getKey(ChannelIndex chIndex)
 {
     Channel &ch = getByIndex(chIndex);
-    ChannelSettings &channelSettings = ch.settings;
+    const ChannelSettings &channelSettings = ch.settings;
     assert(ch.has_settings);
 
     CryptoKey k;
@@ -206,7 +206,7 @@ void Channels::setChannel(const Channel &c)
 const char *Channels::getName(size_t chIndex)
 {
     // Convert the short "" representation for Default into a usable string
-    ChannelSettings &channelSettings = getByIndex(chIndex).settings;
+    const ChannelSettings &channelSettings = getByIndex(chIndex).settings;
     const char *channelName = channelSettings.name;
     if (!*channelName) { // emptystring
         // Per mesh.proto spec, if bandwidth is specified we must ignore modemConfig enum, we assume that in that case
@@ -217,16 +217,22 @@ const char *Channels::getName(size_t chIndex)
         else
             switch (channelSettings.modem_config) {
             case ChannelSettings_ModemConfig_Bw125Cr45Sf128:
-                channelName = "Medium";
+                channelName = "ShortSlow";
                 break;
             case ChannelSettings_ModemConfig_Bw500Cr45Sf128:
                 channelName = "ShortFast";
                 break;
             case ChannelSettings_ModemConfig_Bw31_25Cr48Sf512:
-                channelName = "LongAlt";
+                channelName = "LongFast";
                 break;
             case ChannelSettings_ModemConfig_Bw125Cr48Sf4096:
                 channelName = "LongSlow";
+                break;
+            case ChannelSettings_ModemConfig_Bw250Cr46Sf2048:
+                channelName = "MediumSlow";
+                break;
+            case ChannelSettings_ModemConfig_Bw250Cr47Sf1024:
+                channelName = "MediumFast";
                 break;
             default:
                 channelName = "Invalid";

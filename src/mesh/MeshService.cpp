@@ -112,7 +112,11 @@ bool MeshService::reloadConfig()
 /// The owner User record just got updated, update our node DB and broadcast the info into the mesh
 void MeshService::reloadOwner()
 {
+    // DEBUG_MSG("reloadOwner()\n");
+    // update our local data directly
+    nodeDB.updateUser(nodeDB.getNodeNum(), owner);
     assert(nodeInfoPlugin);
+    // update everyone else
     if (nodeInfoPlugin)
         nodeInfoPlugin->sendOurNodeInfo();
     nodeDB.saveToDisk();
@@ -140,7 +144,7 @@ void MeshService::handleToRadio(MeshPacket &p)
 
     // Send the packet into the mesh
 
-    sendToMesh(packetPool.allocCopy(p));
+    sendToMesh(packetPool.allocCopy(p), RX_SRC_USER);
 
     bool loopback = false; // if true send any packet the phone sends back itself (for testing)
     if (loopback) {
@@ -157,12 +161,12 @@ bool MeshService::cancelSending(PacketId id)
     return router->cancelSending(nodeDB.getNodeNum(), id);
 }
 
-void MeshService::sendToMesh(MeshPacket *p)
+void MeshService::sendToMesh(MeshPacket *p, RxSource src)
 {
     nodeDB.updateFrom(*p); // update our local DB for this packet (because phone might have sent position packets etc...)
 
     // Note: We might return !OK if our fifo was full, at that point the only option we have is to drop it
-    router->sendLocal(p);
+    router->sendLocal(p, src);
 }
 
 void MeshService::sendNetworkPing(NodeNum dest, bool wantReplies)
@@ -209,34 +213,39 @@ NodeInfo *MeshService::refreshMyNodeInfo()
     return node;
 }
 
-int MeshService::onGPSChanged(const meshtastic::GPSStatus *unused)
+int MeshService::onGPSChanged(const meshtastic::GPSStatus *newStatus)
 {
     // Update our local node info with our position (even if we don't decide to update anyone else)
     NodeInfo *node = refreshMyNodeInfo();
-    Position pos = node->position;
+    Position pos = Position_init_default;
 
-    if (gps->hasLock()) {
-        if (gps->altitude != 0)
-            pos.altitude = gps->altitude;
-        pos.latitude_i = gps->latitude;
-        pos.longitude_i = gps->longitude;
+    if (newStatus->getHasLock()) {
+        // load data from GPS object, will add timestamp + battery further down
+        pos = gps->p;
     } else {
         // The GPS has lost lock, if we are fixed position we should just keep using
         // the old position
+#if GPS_EXTRAVERBOSE
+        DEBUG_MSG("onGPSchanged() - lost validLocation\n");
+#endif
         if (radioConfig.preferences.fixed_position) {
             DEBUG_MSG("WARNING: Using fixed position\n");
-        } else {
-            // throw away old position
-            pos.latitude_i = 0;
-            pos.longitude_i = 0;
-            pos.altitude = 0;
+            pos = node->position;
         }
     }
 
-    DEBUG_MSG("got gps notify time=%u, lat=%d, bat=%d\n", pos.time, pos.latitude_i, pos.battery_level);
+    // Finally add a fresh timestamp and battery level reading
+    // I KNOW this is redundant with refreshMyNodeInfo() above, but these are
+    //   inexpensive nonblocking calls and can be refactored in due course
+    pos.time = getValidTime(RTCQualityGPS);
+    pos.battery_level = powerStatus->getBatteryChargePercent();
+
+    // In debug logs, identify position by @timestamp:stage (stage 4 = nodeDB)
+    DEBUG_MSG("onGPSChanged() pos@%x:4, time=%u, lat=%d, bat=%d\n", 
+                pos.pos_timestamp, pos.time, pos.latitude_i, pos.battery_level);
 
     // Update our current position in the local DB
-    nodeDB.updatePosition(nodeDB.getNodeNum(), pos);
+    nodeDB.updatePosition(nodeDB.getNodeNum(), pos, RX_SRC_LOCAL);
 
     return 0;
 }

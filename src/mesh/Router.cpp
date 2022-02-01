@@ -115,7 +115,11 @@ MeshPacket *Router::allocForSending()
     p->which_payloadVariant = MeshPacket_decoded_tag; // Assume payload is decoded at start.
     p->from = nodeDB.getNodeNum();
     p->to = NODENUM_BROADCAST;
-    p->hop_limit = HOP_RELIABLE;
+    if (radioConfig.preferences.hop_limit && radioConfig.preferences.hop_limit <= HOP_MAX) {
+        p->hop_limit = (radioConfig.preferences.hop_limit >= HOP_MAX) ? HOP_MAX : radioConfig.preferences.hop_limit;
+    } else {
+        p->hop_limit = HOP_RELIABLE;
+    }
     p->id = generatePacketId();
     p->rx_time =
         getValidTime(RTCQualityFromNet); // Just in case we process the packet locally - make sure it has a valid timestamp
@@ -145,7 +149,7 @@ void Router::setReceivedMessage()
     runASAP = true;
 }
 
-ErrorCode Router::sendLocal(MeshPacket *p)
+ErrorCode Router::sendLocal(MeshPacket *p, RxSource src)
 {
     // No need to deliver externally if the destination is the local node
     if (p->to == nodeDB.getNodeNum()) {
@@ -161,7 +165,7 @@ ErrorCode Router::sendLocal(MeshPacket *p)
         // If we are sending a broadcast, we also treat it as if we just received it ourself
         // this allows local apps (and PCs) to see broadcasts sourced locally
         if (p->to == NODENUM_BROADCAST) {
-            handleReceived(p);
+            handleReceived(p, src);
         }
 
         return send(p);
@@ -206,6 +210,33 @@ ErrorCode Router::send(MeshPacket *p)
     if (p->which_payloadVariant == MeshPacket_decoded_tag) {
         ChannelIndex chIndex = p->channel; // keep as a local because we are about to change it
 
+
+
+#if defined(HAS_WIFI) || defined(PORTDUINO)
+        //check if we should send decrypted packets to mqtt
+
+        //truth table:
+        /* mqtt_server  mqtt_encryption_enabled should_encrypt
+         *    not set                        0              1
+         *    not set                        1              1
+         *        set                        0              0
+         *        set                        1              1
+         * 
+         * => so we only decrypt mqtt if they have a custom mqtt server AND mqtt_encryption_enabled is FALSE
+         */ 
+
+        bool shouldActuallyEncrypt = true;
+        if (*radioConfig.preferences.mqtt_server && !radioConfig.preferences.mqtt_encryption_enabled) {
+            shouldActuallyEncrypt = false;
+        }
+        
+        DEBUG_MSG("Should encrypt MQTT?: %d\n", shouldActuallyEncrypt);
+
+        //the packet is currently in a decrypted state.  send it now if they want decrypted packets
+        if (mqtt && !shouldActuallyEncrypt)
+            mqtt->onSend(*p, chIndex);
+#endif
+
         auto encodeResult = perhapsEncode(p);
         if (encodeResult != Routing_Error_NONE) {
             abortSendAndNak(encodeResult, p);
@@ -213,7 +244,9 @@ ErrorCode Router::send(MeshPacket *p)
         }
 
 #if defined(HAS_WIFI) || defined(PORTDUINO)
-        if (mqtt)
+        //the packet is now encrypted.
+        //check if we should send encrypted packets to mqtt
+        if (mqtt && shouldActuallyEncrypt)
             mqtt->onSend(*p, chIndex);
 #endif
     }
@@ -324,7 +357,7 @@ NodeNum Router::getNodeNum()
  * Handle any packet that is received by an interface on this node.
  * Note: some packets may merely being passed through this node and will be forwarded elsewhere.
  */
-void Router::handleReceived(MeshPacket *p)
+void Router::handleReceived(MeshPacket *p, RxSource src)
 {
     // Also, we should set the time from the ISR and it should have msec level resolution
     p->rx_time = getValidTime(RTCQualityFromNet); // store the arrival timestamp for the phone
@@ -333,13 +366,18 @@ void Router::handleReceived(MeshPacket *p)
     bool decoded = perhapsDecode(p);
     if (decoded) {
         // parsing was successful, queue for our recipient
-        printPacket("handleReceived", p);
+        if (src == RX_SRC_LOCAL)
+            printPacket("handleReceived(LOCAL)", p);
+        else if (src == RX_SRC_USER)
+            printPacket("handleReceived(USER)", p);
+        else
+            printPacket("handleReceived(REMOTE)", p);
     } else {
         printPacket("packet decoding failed (no PSK?)", p);
     }
 
     // call plugins here
-    MeshPlugin::callPlugins(*p);
+    MeshPlugin::callPlugins(*p, src);
 }
 
 void Router::perhapsHandleReceived(MeshPacket *p)

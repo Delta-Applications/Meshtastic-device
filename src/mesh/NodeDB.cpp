@@ -23,6 +23,7 @@
 #include "mesh/http/WiFiAPClient.h"
 #include "plugins/esp32/StoreForwardPlugin.h"
 #include <Preferences.h>
+#include <nvs_flash.h>
 #endif
 
 NodeDB nodeDB;
@@ -86,6 +87,10 @@ bool NodeDB::resetRadioConfig()
     if (radioConfig.preferences.factory_reset) {
         DEBUG_MSG("Performing factory reset!\n");
         installDefaultDeviceState();
+#ifndef NO_ESP32
+        // This will erase what's in NVS including ssl keys, persistant variables and ble pairing
+        nvs_flash_erase();
+#endif
         didFactoryReset = true;
     }
 
@@ -125,6 +130,11 @@ void NodeDB::installDefaultRadioConfig()
     memset(&radioConfig, 0, sizeof(radioConfig));
     radioConfig.has_preferences = true;
     resetRadioConfig();
+
+    // for backward compat, default position flags are BAT+ALT+MSL (0x23 = 35)
+    radioConfig.preferences.position_flags = (PositionFlags_POS_BATTERY |
+        PositionFlags_POS_ALTITUDE | PositionFlags_POS_ALT_MSL);
+
 }
 
 void NodeDB::installDefaultChannels()
@@ -240,6 +250,10 @@ void NodeDB::init()
     preferences.end();
     DEBUG_MSG("Number of Device Reboots: %d\n", myNodeInfo.reboot_count);
 
+    /* The ESP32 has a wifi radio. This will need to be modified at some point so
+    *    the test isn't so simplistic.
+    */
+    myNodeInfo.has_wifi = true;
 #endif
 
     resetRadioConfig(); // If bogus settings got saved, then fix them
@@ -393,8 +407,8 @@ void NodeDB::saveToDisk()
 #ifdef FS
         FS.mkdir("/prefs");
 #endif
-        bool okay = saveProto(preffile, DeviceState_size, sizeof(devicestate), DeviceState_fields, &devicestate);
-        okay &= saveProto(radiofile, RadioConfig_size, sizeof(RadioConfig), RadioConfig_fields, &radioConfig);
+        saveProto(preffile, DeviceState_size, sizeof(devicestate), DeviceState_fields, &devicestate);
+        saveProto(radiofile, RadioConfig_size, sizeof(RadioConfig), RadioConfig_fields, &radioConfig);
         saveChannelsToDisk();
 
         // remove any pre 1.2 pref files, turn on after 1.2 is in beta
@@ -424,7 +438,7 @@ uint32_t sinceLastSeen(const NodeInfo *n)
     return delta;
 }
 
-#define NUM_ONLINE_SECS (60 * 2) // 2 hrs to consider someone offline
+#define NUM_ONLINE_SECS (60 & 60 * 2) // 2 hrs to consider someone offline
 
 size_t NodeDB::getNumOnlineNodes()
 {
@@ -442,25 +456,42 @@ size_t NodeDB::getNumOnlineNodes()
 
 /** Update position info for this node based on received position data
  */
-void NodeDB::updatePosition(uint32_t nodeId, const Position &p)
+void NodeDB::updatePosition(uint32_t nodeId, const Position &p, RxSource src)
 {
     NodeInfo *info = getOrCreateNode(nodeId);
 
-    DEBUG_MSG("DB update position node=0x%x time=%u, latI=%d, lonI=%d\n", nodeId, p.time, p.latitude_i, p.longitude_i);
+    if (src == RX_SRC_LOCAL) {
+        // Local packet, fully authoritative
+        DEBUG_MSG("updatePosition LOCAL pos@%x:5, time=%u, latI=%d, lonI=%d\n", 
+                p.pos_timestamp, p.time, p.latitude_i, p.longitude_i);
+        info->position = p;
 
-    // Be careful to only update fields that have been set by the sender
-    // A lot of position reports don't have time populated.  In that case, be careful to not blow away the time we
-    // recorded based on the packet rxTime
-    if (p.time)
+    } else if ((p.time > 0) && !p.latitude_i && !p.longitude_i && !p.pos_timestamp && 
+                !p.location_source) {
+        // FIXME SPECIAL TIME SETTING PACKET FROM EUD TO RADIO
+        // (stop-gap fix for issue #900)
+        DEBUG_MSG("updatePosition SPECIAL time setting time=%u\n", p.time);
         info->position.time = p.time;
-    if (p.battery_level)
-        info->position.battery_level = p.battery_level;
-    if (p.latitude_i || p.longitude_i) {
-        info->position.latitude_i = p.latitude_i;
-        info->position.longitude_i = p.longitude_i;
+
+    } else {
+        // Be careful to only update fields that have been set by the REMOTE sender
+        // A lot of position reports don't have time populated.  In that case, be careful to not blow away the time we
+        // recorded based on the packet rxTime
+        //
+        // FIXME perhaps handle RX_SRC_USER separately?
+        DEBUG_MSG("updatePosition REMOTE node=0x%x time=%u, latI=%d, lonI=%d\n", 
+                nodeId, p.time, p.latitude_i, p.longitude_i);
+
+        // First, back up fields that we want to protect from overwrite
+        uint32_t tmp_time = info->position.time;
+
+        // Next, update atomically
+        info->position = p;
+
+        // Last, restore any fields that may have been overwritten
+        if (! info->position.time)
+            info->position.time = tmp_time;
     }
-    if (p.altitude)
-        info->position.altitude = p.altitude;
     info->has_position = true;
     updateGUIforNode = info;
     notifyObservers(true); // Force an update whether or not our node counts have changed

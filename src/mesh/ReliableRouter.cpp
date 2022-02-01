@@ -16,8 +16,13 @@ ErrorCode ReliableRouter::send(MeshPacket *p)
         // If someone asks for acks on broadcast, we need the hop limit to be at least one, so that first node that receives our
         // message will rebroadcast.  But asking for hop_limit 0 in that context means the client app has no preference on hop counts
         // and we want this message to get through the whole mesh, so use the default.
-        if (p->to == NODENUM_BROADCAST && p->hop_limit == 0)
-            p->hop_limit = HOP_RELIABLE;
+        if (p->to == NODENUM_BROADCAST && p->hop_limit == 0) {
+            if (radioConfig.preferences.hop_limit && radioConfig.preferences.hop_limit <= HOP_MAX) {
+                p->hop_limit = (radioConfig.preferences.hop_limit >= HOP_MAX) ? HOP_MAX : radioConfig.preferences.hop_limit;
+            } else {
+                p->hop_limit = HOP_RELIABLE;
+            }
+        }
 
         auto copy = packetPool.allocCopy(*p);
         startRetransmission(copy);
@@ -26,7 +31,7 @@ ErrorCode ReliableRouter::send(MeshPacket *p)
     return FloodingRouter::send(p);
 }
 
-bool ReliableRouter::shouldFilterReceived(const MeshPacket *p)
+bool ReliableRouter::shouldFilterReceived(MeshPacket *p)
 {
     // Note: do not use getFrom() here, because we want to ignore messages sent from phone
     if (p->to == NODENUM_BROADCAST && p->from == getNodeNum()) {
@@ -51,6 +56,17 @@ bool ReliableRouter::shouldFilterReceived(const MeshPacket *p)
         }
         else {
             DEBUG_MSG("didn't find pending packet\n");
+        }
+    }
+
+    /* send acks for repeated packets that want acks and are destined for us
+     * this way if an ACK is dropped and a packet is resent we'll ACK the resent packet
+     * make sure wasSeenRecently _doesn't_ update
+     * finding the channel requires decoding the packet. */
+    if (p->want_ack && (p->to == getNodeNum()) && wasSeenRecently(p, false)) {
+        if (perhapsDecode(p)) {
+            sendAckNak(Routing_Error_NONE, getFrom(p), p->id, p->channel);
+            DEBUG_MSG("acking a repeated want_ack packet\n");
         }
     }
 

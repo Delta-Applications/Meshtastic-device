@@ -1,17 +1,21 @@
 #include "configuration.h"
+#include "input/InputBroker.h"
+#include "input/RotaryEncoderInterruptImpl1.h"
 #include "plugins/ExternalNotificationPlugin.h"
 #include "plugins/NodeInfoPlugin.h"
 #include "plugins/PositionPlugin.h"
 #include "plugins/RemoteHardwarePlugin.h"
 #include "plugins/ReplyPlugin.h"
 #include "plugins/TextMessagePlugin.h" 
-#include "plugins/SerialPlugin.h"
 #include "plugins/TextMessagePlugin.h"
 #include "plugins/RoutingPlugin.h"
 #include "plugins/AdminPlugin.h"
+#include "plugins/CannedMessagePlugin.h"
+#ifndef PORTDUINO
+#include "plugins/EnvironmentalMeasurement/EnvironmentalMeasurementPlugin.h"
+#endif
 #ifndef NO_ESP32
-#include "plugins/SerialPlugin.h"
-#include "plugins/esp32/EnvironmentalMeasurementPlugin.h"
+#include "plugins/esp32/SerialPlugin.h"
 #include "plugins/esp32/RangeTestPlugin.h"
 #include "plugins/esp32/StoreForwardPlugin.h"
 #endif
@@ -21,6 +25,7 @@
  */
 void setupPlugins()
 {
+    inputBroker = new InputBroker();
     adminPlugin = new AdminPlugin();
     nodeInfoPlugin = new NodeInfoPlugin();
     positionPlugin = new PositionPlugin();
@@ -31,7 +36,13 @@ void setupPlugins()
 
     new RemoteHardwarePlugin();
     new ReplyPlugin();
-
+    rotaryEncoderInterruptImpl1 =
+        new RotaryEncoderInterruptImpl1();
+    rotaryEncoderInterruptImpl1->init();
+    cannedMessagePlugin = new CannedMessagePlugin();
+#ifndef PORTDUINO
+    new EnvironmentalMeasurementPlugin();
+#endif
 #ifndef NO_ESP32
     // Only run on an esp32 based device.
 
@@ -46,7 +57,6 @@ void setupPlugins()
 
     new RangeTestPlugin();
     // new StoreForwardPlugin();
-    new EnvironmentalMeasurementPlugin();
 #endif
 
     // NOTE! This plugin must be added LAST because it likes to check for replies from other plugins and avoid sending extra acks

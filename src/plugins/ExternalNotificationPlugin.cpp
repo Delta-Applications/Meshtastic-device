@@ -44,7 +44,7 @@
 */
 
 // Default configurations
-#define EXT_NOTIFICATION_PLUGIN_OUTPUT 13
+#define EXT_NOTIFICATION_PLUGIN_OUTPUT EXT_NOTIFY_OUT
 #define EXT_NOTIFICATION_PLUGIN_OUTPUT_MS 1000
 
 #define ASCII_BELL 0x07
@@ -84,21 +84,25 @@ int32_t ExternalNotificationPlugin::runOnce()
 
 void ExternalNotificationPlugin::setExternalOn()
 {
+    #ifdef EXT_NOTIFY_OUT
     externalCurrentState = 1;
     externalTurnedOn = millis();
 
     digitalWrite((radioConfig.preferences.ext_notification_plugin_output ? radioConfig.preferences.ext_notification_plugin_output
                                                                          : EXT_NOTIFICATION_PLUGIN_OUTPUT),
                  (radioConfig.preferences.ext_notification_plugin_active ? true : false));
+    #endif
 }
 
 void ExternalNotificationPlugin::setExternalOff()
 {
+    #ifdef EXT_NOTIFY_OUT
     externalCurrentState = 0;
 
     digitalWrite((radioConfig.preferences.ext_notification_plugin_output ? radioConfig.preferences.ext_notification_plugin_output
                                                                          : EXT_NOTIFICATION_PLUGIN_OUTPUT),
                  (radioConfig.preferences.ext_notification_plugin_active ? false : true));
+    #endif
 }
 
 // --------
@@ -111,6 +115,7 @@ ExternalNotificationPlugin::ExternalNotificationPlugin()
     boundChannel = Channels::gpioChannel;
 
 #ifndef NO_ESP32
+    #ifdef EXT_NOTIFY_OUT
 
     /*
         Uncomment the preferences below if you want to use the plugin
@@ -140,22 +145,23 @@ ExternalNotificationPlugin::ExternalNotificationPlugin()
         DEBUG_MSG("External Notification Plugin Disabled\n");
         enabled = false;
     }
+    #endif
 #endif
 }
 
-bool ExternalNotificationPlugin::handleReceived(const MeshPacket &mp)
+ProcessMessage ExternalNotificationPlugin::handleReceived(const MeshPacket &mp)
 {
 #ifndef NO_ESP32
+    #ifdef EXT_NOTIFY_OUT
 
     if (radioConfig.preferences.ext_notification_plugin_enabled) {
-
-        auto &p = mp.decoded;
 
         if (getFrom(&mp) != nodeDB.getNodeNum()) {
 
             // TODO: This may be a problem if messages are sent in unicide, but I'm not sure if it will.
             //   Need to know if and how this could be a problem.
             if (radioConfig.preferences.ext_notification_plugin_alert_bell) {
+                auto &p = mp.decoded;
                 DEBUG_MSG("externalNotificationPlugin - Notification Bell\n");
                 for (int i = 0; i < p.payload.size; i++) {
                     if (p.payload.bytes[i] == ASCII_BELL) {
@@ -173,8 +179,9 @@ bool ExternalNotificationPlugin::handleReceived(const MeshPacket &mp)
     } else {
         DEBUG_MSG("External Notification Plugin Disabled\n");
     }
+    #endif
 
 #endif
 
-    return false; // Very important to never return TRUE here.  TRUE means we handled the packet and we will stop letting other plugins see it
+    return ProcessMessage::CONTINUE; // Let others look at this message also if they want
 }

@@ -66,7 +66,7 @@ MeshPacket *MeshPlugin::allocErrorResponse(Routing_Error err, const MeshPacket *
     return r;
 }
 
-void MeshPlugin::callPlugins(const MeshPacket &mp)
+void MeshPlugin::callPlugins(const MeshPacket &mp, RxSource src)
 {
     // DEBUG_MSG("In call plugins\n");
     bool pluginFound = false;
@@ -79,6 +79,7 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
     // Was this message directed to us specifically?  Will be false if we are sniffing someone elses packets
     auto ourNodeNum = nodeDB.getNodeNum();
     bool toUs = mp.to == NODENUM_BROADCAST || mp.to == ourNodeNum;
+
     for (auto i = plugins->begin(); i != plugins->end(); ++i) {
         auto &pi = **i;
 
@@ -87,10 +88,15 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
         /// We only call plugins that are interested in the packet (and the message is destined to us or we are promiscious)
         bool wantsPacket = (isDecoded || pi.encryptedOk) && (pi.isPromiscuous || toUs) && pi.wantPacket(&mp);
 
+        if ((src == RX_SRC_LOCAL) && !(pi.loopbackOk)) {
+            // new case, monitor separately for now, then FIXME merge above
+            wantsPacket = false;
+        }
+
         assert(!pi.myReply); // If it is !null it means we have a bug, because it should have been sent the previous time
 
         if (wantsPacket) {
-            DEBUG_MSG("Plugin %s wantsPacket=%d\n", pi.name, wantsPacket);
+            DEBUG_MSG("Plugin '%s' wantsPacket=%d\n", pi.name, wantsPacket);
 
             pluginFound = true;
 
@@ -103,7 +109,10 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
             /// Also: if a packet comes in on the local PC interface, we don't check for bound channels, because it is TRUSTED and it needs to
             /// to be able to fetch the initial admin packets without yet knowing any channels.
 
-            bool rxChannelOk = !pi.boundChannel || (mp.from == 0) || (ch && (strcmp(ch->settings.name, pi.boundChannel) == 0));
+            bool rxChannelOk = !pi.boundChannel || (mp.from == 0) ||
+                !ch ||
+                strlen(ch->settings.name) > 0 ||
+                strcmp(ch->settings.name, pi.boundChannel);
 
             if (!rxChannelOk) {
                 // no one should have already replied!
@@ -116,7 +125,7 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
                     printPacket("packet on wrong channel, but can't respond", &mp);
             } else {
 
-                bool handled = pi.handleReceived(mp);
+                ProcessMessage handled = pi.handleReceived(mp);
 
                 // Possibly send replies (but only if the message was directed to us specifically, i.e. not for promiscious
                 // sniffing) also: we only let the one plugin send a reply, once that happens, remaining plugins are not
@@ -128,9 +137,9 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
                 // any other node.
                 if (mp.decoded.want_response && toUs && (getFrom(&mp) != ourNodeNum || mp.to == ourNodeNum) && !currentReply) {
                     pi.sendResponse(mp);
-                    DEBUG_MSG("Plugin %s sent a response\n", pi.name);
+                    DEBUG_MSG("Plugin '%s' sent a response\n", pi.name);
                 } else {
-                    DEBUG_MSG("Plugin %s considered\n", pi.name);
+                    DEBUG_MSG("Plugin '%s' considered\n", pi.name);
                 }
 
                 // If the requester didn't ask for a response we might need to discard unused replies to prevent memory leaks
@@ -140,8 +149,8 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
                     pi.myReply = NULL;
                 }
 
-                if (handled) {
-                    DEBUG_MSG("Plugin %s handled and skipped other processing\n", pi.name);
+                if (handled == ProcessMessage::STOP) {
+                    DEBUG_MSG("Plugin '%s' handled and skipped other processing\n", pi.name);
                     break;
                 }
             }
@@ -169,7 +178,9 @@ void MeshPlugin::callPlugins(const MeshPacket &mp)
     }
 
     if (!pluginFound)
-        DEBUG_MSG("No plugins interested in portnum=%d\n", mp.decoded.portnum);
+        DEBUG_MSG("No plugins interested in portnum=%d, src=%s\n",
+                    mp.decoded.portnum, 
+                    (src == RX_SRC_LOCAL) ? "LOCAL":"REMOTE");
 }
 
 MeshPacket *MeshPlugin::allocReply()
@@ -223,4 +234,19 @@ std::vector<MeshPlugin *> MeshPlugin::GetMeshPluginsWithUIFrames()
         }
     }
     return pluginsWithUIFrames;
+}
+
+void MeshPlugin::observeUIEvents(
+    Observer<const UIFrameEvent *> *observer)
+{
+    std::vector<MeshPlugin *> pluginsWithUIFrames;
+    for (auto i = plugins->begin(); i != plugins->end(); ++i) {
+        auto &pi = **i;
+        Observable<const UIFrameEvent *> *observable =
+            pi.getUIFrameObservable();
+        if (observable != NULL) {
+            DEBUG_MSG("Plugin wants a UI Frame\n");
+            observer->observe(observable);
+        }
+    }
 }

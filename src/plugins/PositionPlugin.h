@@ -13,6 +13,10 @@ class PositionPlugin : public ProtobufPlugin<Position>, private concurrency::OST
     /// We limit our GPS broadcasts to a max rate
     uint32_t lastGpsSend = 0;
 
+    // Store the latest good lat / long
+    int32_t lastGpsLatitude = 0;
+    int32_t lastGpsLongitude = 0;
+
     /// We force a rebroadcast if the radio settings change
     uint32_t currentGeneration = 0;
 
@@ -33,14 +37,14 @@ class PositionPlugin : public ProtobufPlugin<Position>, private concurrency::OST
 
     @return true if you've guaranteed you've handled this message and no other handlers should be considered for it
     */
-    virtual bool handleReceivedProtobuf(const MeshPacket &mp, Position *p);
+    virtual bool handleReceivedProtobuf(const MeshPacket &mp, Position *p) override;
 
     /** Messages can be received that have the want_response bit set.  If set, this callback will be invoked
      * so that subclasses can (optionally) send a response back to the original sender.  */
-    virtual MeshPacket *allocReply();
+    virtual MeshPacket *allocReply() override;
 
     /** Does our periodic broadcast */
-    virtual int32_t runOnce();  
+    virtual int32_t runOnce() override;
 };
 
 extern PositionPlugin *positionPlugin;
